@@ -1,0 +1,32 @@
+/* Markdown Export plugin styles */
+
+.md-export-preview-modal {
+	padding: 0;
+}
+
+.md-export-preview-modal .modal-content {
+	padding: 0;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	height: 80vh;
+}
+
+.md-export-toolbar {
+	display: flex;
+	gap: 8px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+.md-export-toolbar button {
+	flex: 1;
+}
+
+.md-export-preview-frame {
+	flex: 1;
+	border: none;
+	width: 100%;
+	background: white;
+}
