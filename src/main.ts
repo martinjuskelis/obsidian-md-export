@@ -121,54 +121,17 @@ export default class MdExportPlugin extends Plugin {
 	}
 
 	private openPrintPreview(title: string, html: string) {
-		// Use an iframe to trigger the native print dialog directly
-		// — works on both mobile and desktop without opening a browser.
-		// On Android/iOS the print dialog includes "Save as PDF".
-		const iframe = document.createElement("iframe");
-		iframe.style.cssText =
-			"position:fixed;top:0;left:0;width:100%;height:100%;opacity:0;pointer-events:none;z-index:-1;";
-		document.body.appendChild(iframe);
-
-		const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
-		if (!iframeDoc) {
-			document.body.removeChild(iframe);
-			// Fallback: save HTML and open externally
-			this.fallbackPrint(title, html);
-			return;
+		if (Platform.isMobile) {
+			// Mobile: window.print() silently fails in Capacitor WebView.
+			// Save HTML and open with system browser instead.
+			this.mobileExportPdf(title, html);
+		} else {
+			// Desktop: iframe print triggers the OS print dialog directly.
+			this.desktopPrint(title, html);
 		}
-
-		iframeDoc.open();
-		iframeDoc.write(html);
-		iframeDoc.close();
-
-		// Wait for content (especially images) to render before printing
-		const triggerPrint = () => {
-			try {
-				iframe.contentWindow?.print();
-			} catch {
-				// If iframe print fails (some mobile browsers), fall back
-				document.body.removeChild(iframe);
-				this.fallbackPrint(title, html);
-				return;
-			}
-			// Clean up after a delay to allow the print dialog to appear
-			setTimeout(() => {
-				document.body.removeChild(iframe);
-			}, 1000);
-		};
-
-		// Give the iframe time to render images and styles
-		if (iframe.contentWindow) {
-			iframe.contentWindow.onafterprint = () => {
-				document.body.removeChild(iframe);
-			};
-		}
-		setTimeout(triggerPrint, 300);
 	}
 
-	private async fallbackPrint(title: string, html: string) {
-		// Fallback for environments where iframe printing doesn't work:
-		// save an HTML file and open it with the system default app.
+	private async mobileExportPdf(title: string, html: string) {
 		const tempPath = `_export_${title}.html`;
 
 		const existing = this.app.vault.getAbstractFileByPath(tempPath);
@@ -184,8 +147,46 @@ export default class MdExportPlugin extends Plugin {
 		}
 
 		new Notice(
-			"Opened in browser — use Share/Print to save as PDF. You can delete the temporary HTML file afterwards.",
+			"Opened in browser. Use Share or Print to save as PDF, then delete the _export file.",
 			8000
 		);
+	}
+
+	private desktopPrint(title: string, html: string) {
+		const iframe = document.createElement("iframe");
+		iframe.style.cssText =
+			"position:fixed;top:0;left:0;width:100%;height:100%;opacity:0;pointer-events:none;z-index:-1;";
+		document.body.appendChild(iframe);
+
+		const iframeDoc =
+			iframe.contentDocument || iframe.contentWindow?.document;
+		if (!iframeDoc) {
+			document.body.removeChild(iframe);
+			new Notice("Could not create print preview.", 5000);
+			return;
+		}
+
+		iframeDoc.open();
+		iframeDoc.write(html);
+		iframeDoc.close();
+
+		if (iframe.contentWindow) {
+			iframe.contentWindow.onafterprint = () => {
+				document.body.removeChild(iframe);
+			};
+		}
+
+		setTimeout(() => {
+			try {
+				iframe.contentWindow?.print();
+			} catch {
+				document.body.removeChild(iframe);
+				new Notice("Print failed. Try Export as HTML instead.", 5000);
+			}
+			// Clean up if onafterprint didn't fire
+			setTimeout(() => {
+				if (iframe.parentNode) document.body.removeChild(iframe);
+			}, 60000);
+		}, 300);
 	}
 }

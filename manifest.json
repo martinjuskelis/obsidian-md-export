@@ -1,7 +1,7 @@
 {
 	"id": "md-export",
 	"name": "Markdown Export",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"minAppVersion": "1.0.0",
 	"description": "Export notes to HTML and PDF on desktop and mobile.",
 	"author": "Martin Juskelis",
