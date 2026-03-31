@@ -121,17 +121,54 @@ export default class MdExportPlugin extends Plugin {
 	}
 
 	private openPrintPreview(title: string, html: string) {
-		if (Platform.isMobile) {
-			// On mobile, save a temp HTML file and open with default app
-			this.mobilePrint(title, html);
-		} else {
-			// On desktop, open a print-ready window
-			this.desktopPrint(title, html);
+		// Use an iframe to trigger the native print dialog directly
+		// — works on both mobile and desktop without opening a browser.
+		// On Android/iOS the print dialog includes "Save as PDF".
+		const iframe = document.createElement("iframe");
+		iframe.style.cssText =
+			"position:fixed;top:0;left:0;width:100%;height:100%;opacity:0;pointer-events:none;z-index:-1;";
+		document.body.appendChild(iframe);
+
+		const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+		if (!iframeDoc) {
+			document.body.removeChild(iframe);
+			// Fallback: save HTML and open externally
+			this.fallbackPrint(title, html);
+			return;
 		}
+
+		iframeDoc.open();
+		iframeDoc.write(html);
+		iframeDoc.close();
+
+		// Wait for content (especially images) to render before printing
+		const triggerPrint = () => {
+			try {
+				iframe.contentWindow?.print();
+			} catch {
+				// If iframe print fails (some mobile browsers), fall back
+				document.body.removeChild(iframe);
+				this.fallbackPrint(title, html);
+				return;
+			}
+			// Clean up after a delay to allow the print dialog to appear
+			setTimeout(() => {
+				document.body.removeChild(iframe);
+			}, 1000);
+		};
+
+		// Give the iframe time to render images and styles
+		if (iframe.contentWindow) {
+			iframe.contentWindow.onafterprint = () => {
+				document.body.removeChild(iframe);
+			};
+		}
+		setTimeout(triggerPrint, 300);
 	}
 
-	private async mobilePrint(title: string, html: string) {
-		// Save to a temporary HTML file the user can open in their browser
+	private async fallbackPrint(title: string, html: string) {
+		// Fallback for environments where iframe printing doesn't work:
+		// save an HTML file and open it with the system default app.
 		const tempPath = `_export_${title}.html`;
 
 		const existing = this.app.vault.getAbstractFileByPath(tempPath);
@@ -141,39 +178,14 @@ export default class MdExportPlugin extends Plugin {
 			await this.app.vault.create(tempPath, html);
 		}
 
-		// Open with the system default browser
 		const file = this.app.vault.getAbstractFileByPath(tempPath);
 		if (file instanceof TFile) {
 			await (this.app as any).openWithDefaultApp(file.path);
 		}
 
 		new Notice(
-			"Opened in browser. Use your browser's Share or Print menu to save as PDF. You can delete the temporary HTML file afterwards.",
-			10000
+			"Opened in browser — use Share/Print to save as PDF. You can delete the temporary HTML file afterwards.",
+			8000
 		);
-	}
-
-	private desktopPrint(title: string, html: string) {
-		// Open a new browser window with the content and trigger print
-		const printWindow = window.open("", "_blank");
-		if (!printWindow) {
-			new Notice(
-				"Could not open print window. Your browser may be blocking pop-ups.",
-				6000
-			);
-			return;
-		}
-		printWindow.document.write(html);
-		printWindow.document.close();
-		printWindow.document.title = title;
-
-		// Wait for content to render before printing
-		printWindow.onload = () => {
-			printWindow.print();
-		};
-		// Fallback if onload doesn't fire
-		setTimeout(() => {
-			printWindow.print();
-		}, 500);
 	}
 }

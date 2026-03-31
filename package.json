@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-md-export",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "Export notes to HTML and PDF on desktop and mobile",
 	"main": "main.js",
 	"scripts": {
