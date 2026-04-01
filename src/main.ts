@@ -1,4 +1,4 @@
-import { Modal, Notice, Platform, Plugin, TFile } from "obsidian";
+import { Notice, Platform, Plugin, TFile } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	MdExportSettingTab,
@@ -77,11 +77,19 @@ export default class MdExportPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	private exporting = false;
+
 	private async exportNote(file: TFile, format: "html" | "pdf") {
+		if (this.exporting) {
+			new Notice("An export is already in progress.");
+			return;
+		}
+		this.exporting = true;
+
 		const progressNotice = new Notice("Exporting...", 0);
 
 		try {
-			const markdown = await this.app.vault.read(file);
+			const markdown = await this.app.vault.cachedRead(file);
 			const html = await renderNoteToHtml(
 				this.app,
 				markdown,
@@ -102,6 +110,8 @@ export default class MdExportPlugin extends Plugin {
 			const msg = err instanceof Error ? err.message : String(err);
 			new Notice(`Export failed: ${msg}`, 8000);
 			console.error("md-export: export error", err);
+		} finally {
+			this.exporting = false;
 		}
 	}
 
@@ -122,17 +132,16 @@ export default class MdExportPlugin extends Plugin {
 
 	private openPrintPreview(title: string, html: string) {
 		if (Platform.isMobile) {
-			// Mobile: window.print() silently fails in Capacitor WebView.
-			// Save HTML and open with system browser instead.
 			this.mobileExportPdf(title, html);
 		} else {
-			// Desktop: iframe print triggers the OS print dialog directly.
 			this.desktopPrint(title, html);
 		}
 	}
 
 	private async mobileExportPdf(title: string, html: string) {
-		const tempPath = `_export_${title}.html`;
+		// Sanitize filename for safety
+		const safeName = title.replace(/[\\/:*?"<>|]/g, "_").substring(0, 80);
+		const tempPath = `_export_${safeName}.html`;
 
 		const existing = this.app.vault.getAbstractFileByPath(tempPath);
 		if (existing instanceof TFile) {
@@ -143,7 +152,12 @@ export default class MdExportPlugin extends Plugin {
 
 		const file = this.app.vault.getAbstractFileByPath(tempPath);
 		if (file instanceof TFile) {
-			await (this.app as any).openWithDefaultApp(file.path);
+			if (typeof (this.app as any).openWithDefaultApp === "function") {
+				await (this.app as any).openWithDefaultApp(file.path);
+			} else {
+				new Notice("Could not open file. Try Export as HTML instead.", 6000);
+				return;
+			}
 		}
 
 		new Notice(
@@ -172,7 +186,7 @@ export default class MdExportPlugin extends Plugin {
 
 		if (iframe.contentWindow) {
 			iframe.contentWindow.onafterprint = () => {
-				document.body.removeChild(iframe);
+				if (iframe.parentNode) document.body.removeChild(iframe);
 			};
 		}
 
@@ -180,7 +194,7 @@ export default class MdExportPlugin extends Plugin {
 			try {
 				iframe.contentWindow?.print();
 			} catch {
-				document.body.removeChild(iframe);
+				if (iframe.parentNode) document.body.removeChild(iframe);
 				new Notice("Print failed. Try Export as HTML instead.", 5000);
 			}
 			// Clean up if onafterprint didn't fire

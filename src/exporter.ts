@@ -158,13 +158,14 @@ export async function renderNoteToHtml(
 	sourcePath: string,
 	settings: MdExportSettings
 ): Promise<string> {
-	// Strip frontmatter from markdown unless we want to include it
-	let body = markdown;
+	// Normalize line endings then strip frontmatter
+	const normalized = markdown.replace(/\r\n/g, "\n");
+	let body = normalized;
 	let frontmatter: Record<string, string> | null = null;
 
-	const fmMatch = markdown.match(/^---\n([\s\S]*?)\n---\n/);
+	const fmMatch = normalized.match(/^---\n([\s\S]*?)\n---\n?/);
 	if (fmMatch) {
-		body = markdown.substring(fmMatch[0].length);
+		body = normalized.substring(fmMatch[0].length);
 		if (settings.includeFrontmatter) {
 			frontmatter = parseFrontmatter(fmMatch[1]);
 		}
@@ -193,11 +194,14 @@ export async function renderNoteToHtml(
 		fmHtml = `<table class="frontmatter-table"><tbody>${rows}</tbody></table>`;
 	}
 
-	// Embed images as base64 data URIs
-	const renderedHtml = await embedImages(app, container.innerHTML, sourcePath);
+	// Embed images as base64 data URIs by walking the DOM directly
+	await embedImages(app, container, sourcePath);
+	const renderedHtml = container.innerHTML;
 
 	const title = extractTitle(body, sourcePath);
-	const customCss = settings.customCss ? `\n${settings.customCss}\n` : "";
+	const customCss = settings.customCss
+		? `\n${settings.customCss.replace(/<\/style>/gi, "<\\/style>")}\n`
+		: "";
 
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -216,23 +220,20 @@ ${renderedHtml}
 
 async function embedImages(
 	app: App,
-	html: string,
+	container: HTMLElement,
 	sourcePath: string
-): Promise<string> {
-	// Find all image src attributes that are local vault paths
-	const imgRegex = /(<img[^>]*\ssrc=")([^"]+)("[^>]*>)/g;
-	const replacements: Array<{ original: string; replacement: string }> = [];
-
-	let match;
-	while ((match = imgRegex.exec(html)) !== null) {
-		const src = match[2];
-		// Skip data URIs and external URLs
+): Promise<void> {
+	// Walk the actual DOM elements instead of regex on serialized HTML.
+	// This avoids issues with $ in base64, attribute quoting, etc.
+	const imgs = container.querySelectorAll("img");
+	for (const img of Array.from(imgs)) {
+		const src = img.getAttribute("src");
+		if (!src) continue;
 		if (src.startsWith("data:") || src.startsWith("http://") || src.startsWith("https://")) {
 			continue;
 		}
 
 		try {
-			// Resolve the image path relative to the source note
 			const resolvedPath = resolveVaultPath(app, src, sourcePath);
 			const file = app.vault.getAbstractFileByPath(resolvedPath);
 			if (file && file instanceof TFile) {
@@ -240,40 +241,26 @@ async function embedImages(
 				const ext = file.extension.toLowerCase();
 				const mime = getMimeType(ext);
 				const base64 = arrayBufferToBase64(data);
-				const dataUri = `data:${mime};base64,${base64}`;
-				replacements.push({
-					original: match[0],
-					replacement: `${match[1]}${dataUri}${match[3]}`,
-				});
+				img.setAttribute("src", `data:${mime};base64,${base64}`);
 			}
 		} catch {
 			// Skip images we can't resolve
 		}
 	}
-
-	let result = html;
-	for (const r of replacements) {
-		result = result.replace(r.original, r.replacement);
-	}
-	return result;
 }
 
 function resolveVaultPath(app: App, src: string, sourcePath: string): string {
-	// Try as-is first (might be a vault-absolute path)
 	if (app.vault.getAbstractFileByPath(src)) return src;
 
-	// Decode URI encoding
 	const decoded = decodeURIComponent(src);
 	if (app.vault.getAbstractFileByPath(decoded)) return decoded;
 
-	// Try relative to the source file's directory
 	const sourceDir = sourcePath.includes("/")
 		? sourcePath.substring(0, sourcePath.lastIndexOf("/"))
 		: "";
 	const relative = sourceDir ? `${sourceDir}/${decoded}` : decoded;
 	if (app.vault.getAbstractFileByPath(relative)) return relative;
 
-	// Try using Obsidian's link resolution
 	const resolved = app.metadataCache.getFirstLinkpathDest(decoded, sourcePath);
 	if (resolved) return resolved.path;
 
@@ -281,9 +268,12 @@ function resolveVaultPath(app: App, src: string, sourcePath: string): string {
 }
 
 function extractTitle(markdown: string, sourcePath: string): string {
-	const headingMatch = markdown.match(/^#\s+(.+)$/m);
-	if (headingMatch) return headingMatch[1].trim();
-	// Fall back to filename
+	// Only check the first 20 lines for a heading
+	const lines = markdown.split("\n", 20);
+	for (const line of lines) {
+		const match = line.match(/^#\s+(.+)$/);
+		if (match) return match[1].trim();
+	}
 	const parts = sourcePath.split("/");
 	const filename = parts[parts.length - 1];
 	return filename.replace(/\.md$/, "");
@@ -292,11 +282,15 @@ function extractTitle(markdown: string, sourcePath: string): string {
 function parseFrontmatter(raw: string): Record<string, string> {
 	const result: Record<string, string> = {};
 	for (const line of raw.split("\n")) {
+		// Skip continuation lines (indented, indicating arrays/objects)
+		if (/^\s/.test(line)) continue;
 		const colonIdx = line.indexOf(":");
 		if (colonIdx === -1) continue;
 		const key = line.substring(0, colonIdx).trim();
-		const value = line.substring(colonIdx + 1).trim().replace(/^["']|["']$/g, "");
-		if (key) result[key] = value;
+		let value = line.substring(colonIdx + 1).trim();
+		// Strip surrounding quotes
+		value = value.replace(/^["']|["']$/g, "");
+		if (key && value) result[key] = value;
 	}
 	return result;
 }
@@ -306,7 +300,8 @@ function escapeHtml(s: string): string {
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
 }
 
 function getMimeType(ext: string): string {
@@ -318,15 +313,19 @@ function getMimeType(ext: string): string {
 		svg: "image/svg+xml",
 		webp: "image/webp",
 		bmp: "image/bmp",
+		avif: "image/avif",
+		tiff: "image/tiff",
+		ico: "image/x-icon",
 	};
 	return mimes[ext] || "application/octet-stream";
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
 	const bytes = new Uint8Array(buffer);
+	const CHUNK = 0x8000;
 	let binary = "";
-	for (let i = 0; i < bytes.byteLength; i++) {
-		binary += String.fromCharCode(bytes[i]);
+	for (let i = 0; i < bytes.length; i += CHUNK) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
 	}
 	return btoa(binary);
 }
